@@ -4,7 +4,8 @@ series_id = "SQR"
 canonical_url = "https://sqr-111.lsst.io"
 github_url = "https://github.com/lsst-sqre/sqr-111"
 github_default_branch = "main"
-date_created = 2026-01-28T00:14:03Z
+date_created = 2026-01-28
+date_updated = 2026-01-28
 organization.name = "NSF-DOE Vera C. Rubin Observatory"
 organization.ror = "https://ror.org/048g3cy84"
 license.id = "CC-BY-4.0"
@@ -17,6 +18,7 @@ name.given = "Russ"
 name.family = "Allbery"
 internal_id = "allberyr"
 orcid = "https://orcid.org/0009-0009-9491-8923"
+
 [[technote.authors.affiliations]]
 name = "Vera C. Rubin Observatory Project Office"
 internal_id = "RubinObs"
