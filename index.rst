@@ -81,7 +81,6 @@ The high-level migration steps are:
    If that proves too complex, we can go directly to a new ``GafaelfawrGateway`` resource and corresponding Gafaelfawr implementation.
 
 #. Add any necessary additional support to Gafaelfawr required by the chosen Gateway API implementation.
-   For example, choosing Envoy will probably require adding a gRPC external authorization service to Gafaelfawr.
    We may also have to further optimize a hot path for Gafaelfawr authorization requests if the chosen Gateway API doesn't support caching.
 
 #. Add Phalanx support for choosing between ingress-nginx and the new Gateway API, and write migration steps for how to convert an existing cluster.
@@ -108,7 +107,7 @@ Unfortunately, I have not been able to find a gateway API implementation that su
 This means none of the implementations discussed below meet our basic requirements, and we may have to find other workarounds.
 See :ref:`gaps` for more details.
 
-Based on an initial review, Envoy appears to be the best option, although this will require a significant redesign of Gafaelfawr.
+Based on an initial review, Envoy appears to be the best option, although this will require a significant redesign of Gafaelfawr if we want to use the GRPC protocol.
 Traefik could be made to work, but we would lose the ability to inject headers into the response.
 The other options I evaluated looked less interesting.
 
@@ -135,16 +134,56 @@ Traefik appears to be missing the following necessary features:
 Envoy
 -----
 
-Envoy_ support for HTTP-based external authentication is very limited.
-It does not return full failure replies to the client, and it hard-codes a 403 response code.
-However, Envoy supports a separate `gRPC protocol for external auth <https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto>`__ that does appear to support all the features we need, including custom status codes for rejections and injecting headers into the response sent to the client after backend processing.
+The `Envoy gateway`_ is a controller that implements the Gateway protocol by dynamically configuring the `Envoy proxy`_.
+The bare proxy supports everything we need (except auth caching), but the gateway operator does not yet expose all of the necessary config to the Kubernetes API.
 
-.. _Envoy: https://gateway.envoyproxy.io/docs/
 
-Gafaelfawr could gain support for this gRPC protocol, and in some ways it would be an improvement over the way external auth is currently handled.
+.. _Envoy proxy: https://www.envoyproxy.io/
+.. _Envoy gateway: https://gateway.envoyproxy.io/docs/
+
+External auth is configured by using the `ext_authz filter <https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_authz_filter>`__.
+This filter enables calling out to either an HTTP or GRPC-based auth server and manipulating the request to the backend and the response to the client based on the response from the auth server.
+
+Both the `gRPC protocol for external auth <https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto>`__ and the `HTTP configuration <https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto#envoy-v3-api-msg-extensions-filters-http-ext-authz-v3-httpservice>`__ support all of the auth features we need, but the gateway API does not expose all of the necessary config.
+This is not a problem with the gRPC interface because all of the necessary info is in the gRPC messages themselves, and nothing needs to be configured in the proxy.
+Gafaelfawr could gain support for the gRPC protocol, and in some ways it would be an improvement over the way external auth is currently handled.
 For example, only one endpoint would be required, since all of the necessary information is in the request body.
 Gafaelfawr could maintain its own internal database of authorization rules, based on gathered Kubernetes resources, avoiding the need to create a separate external auth rule for every ingress or gateway.
 This would require a substantial redesign of Gafaelfawr's request flow, however.
+
+.. list-table:: HTTP auth proxy support
+   :header-rows: 1
+
+   * - Feature
+     - Proxy Support
+     - Gateway Support
+   * - Denied: response code
+     - yes
+     - yes
+   * - Denied: body
+     - yes
+     - yes
+   * - Denied: headers to client
+     - yes
+     - yes [#]_
+   * - Accepted: headers to backend
+     - yes
+     - yes
+   * - Accepted: headers to client
+     - yes
+     - **no** [#]_
+   * - Redirect to login
+     - **no**
+     - **no** [#]_
+   * - Cache auth responses
+     - **no**
+     - **no**
+
+.. [#] Though the whole header passing API in the gateway is currently pretty buggy, as seen in `this GitHub issue <https://github.com/envoyproxy/envoy/issues/41828#issuecomment-3766420747>`__
+.. [#] There is a good chance that this will be supported by the gateway in the future, though who knows when.
+   `This GitHub comment <https://github.com/envoyproxy/envoy/issues/41828#issuecomment-3766295193>`__ suggests that folks are working on improving the whole external auth API.
+   In the meantime, this could maybe be done with `PatchPolicy <https://gateway.envoyproxy.io/docs/tasks/extensibility/envoy-patch-policy/>`__, but not recommended.
+.. [#] Gafaelfawr would have to return a 3xx response with the correct location
 
 Envoy supports URL rewriting via the standardized ``HTTPURLRewriteFilter`` approach, which is cleaner than Traefik's use of custom middleware.
 This approach is more limited in what it can do, but I believe it will satisfy our requirements.
@@ -153,6 +192,7 @@ Envoy appears to be missing the following necessary features:
 
 - Envoy `does not support caching of external authentication results <https://github.com/envoyproxy/envoy/issues/3023>`__.
 - There does not appear to be any support for rewriting URLs returned by the backend before sending them to the client.
+  We may be able to use `a custom Lua extension <https://gateway.envoyproxy.io/docs/tasks/extensibility/lua/>`__ for this.
 
 Unlike some of the other new gateways, Envoy is written in C++, rather than in a memory-safe language such as Go.
 This is not as bad as being written in C, but it somewhat increases the risk of security vulnerabilities.
@@ -167,6 +207,8 @@ None of the `advantages over Envoy <https://kgateway.dev/docs/envoy/latest/faqs/
 .. _Kgateway: https://kgateway.dev/docs/envoy/latest/about/overview/
 
 The documentation is quite nice and easy to follow, though, so it may be worth a closer look.
+
+.. _nginx-gateway:
 
 NGINX Gateway Fabric
 --------------------
@@ -192,7 +234,7 @@ HAProxy
 HAProxy_ has an initial implementation of the Kubernetes Gateway API, but it is appears to be incomplete, largely undocumented, and possibly unmaintained.
 I was unable to determine whether it supported any of the features we need.
 
-.. HAProxy: https://www.haproxy.com/documentation/kubernetes-ingress/gateway-api/
+.. _HAProxy: https://www.haproxy.com/documentation/kubernetes-ingress/gateway-api/
 
 .. _gaps:
 
@@ -230,8 +272,27 @@ Currently, every authorization check requires a call to Redis.
 That call, at least, could be avoided by adding an additional in-memory cache similar to that used in ingress-nginx currently, using the method and the ``Authorization`` and ``Cookie`` headers as keys.
 It's not clear whether that would be sufficient to make an approach without gateway-side caching viable, since each request would still have to pay the cost of parsing the Gafaelfawr request in Python.
 
-Using Envoy does open up some additional possibilities since with Envoy the external auth request would probably have to be a gRPC request.
+Using Envoy does open up some additional possibilities since with Envoy the external auth request could be a gRPC request.
 We would have to experiment to see if those requests were more efficient; they might be, since the parsing of the request is done via protobuf and should be faster than the Python-based parsing of conventional HTTP query parameters.
 
 In the most extreme case, it may be possible to implement a caching layer for the external authorization check in another, faster programming language (Rust or Go) with gRPC support, and have it call out to the Gafaelfawr Python backend only when needed.
 This is a lot of additional complexity, however, and should only be considered if the lack of caching causes unacceptable performance degredation and we can't find a better alternative.
+
+Migrate to another Ingress controller
+=====================================
+
+Another option is to migrate to another Ingress-based controller that will remain supported, instead of going all the way to a Gateway-based controller.
+Even though the Ingress API has been frozen, there are no plans to deprecate or remove it.
+If it is significantly easier, we may want to migrate to another Ingress-based controller first so we can at least be using something that is still getting security patches.
+
+NGINX Ingress
+-------------
+
+The `NGINX Ingress`_ controller is the official NGINX ingress controller maintained by F5, the owners of NGINX.
+It theoretically supports all of the functionality of ingress-nginx because it too uses NGINX as the proxy.
+
+.. _NGINX Ingress: https://docs.nginx.com/nginx-ingress-controller/
+
+Unfortunately, it has the same problem as the :ref:`nginx-gateway`: very few of the features that we need appear to be supported out of the box.
+We would be required to write and maintain explicit NGINX configuration ourselves.
+
