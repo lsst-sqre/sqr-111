@@ -185,6 +185,10 @@ This would require a substantial redesign of Gafaelfawr's request flow, however.
    In the meantime, this could maybe be done with `PatchPolicy <https://gateway.envoyproxy.io/docs/tasks/extensibility/envoy-patch-policy/>`__, but not recommended.
 .. [#] Gafaelfawr would have to return a 3xx response with the correct location
 
+One other way The HTTP option is incompatible with Gafaelfawr is that it always appends the path of the request to the auth server path.
+For example, if the client request is to ``/somepath``, and the auth proxy is configured to request ``/authpath?foo=bar``, then the actual auth server path requested is ``/authpath?foo=bar/somepath``.
+We would likely be able to disable this path appending soon, based on `this GitHub issue <https://github.com/envoyproxy/envoy/issues/43398>`__ and associated PR.
+
 Envoy supports URL rewriting via the standardized ``HTTPURLRewriteFilter`` approach, which is cleaner than Traefik's use of custom middleware.
 This approach is more limited in what it can do, but I believe it will satisfy our requirements.
 
