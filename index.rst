@@ -269,8 +269,6 @@ For Butler, uncached authorization checks caused noticable performance degredati
 There does not appear to be a straightforward path to resolve this gap.
 Neither the Traefik nor the Envoy projects appear interested in adding support, although the Traefik developers did indicate they would look at community PRs.
 
-It might be possible to set up a cache between the gateway and Gafaelfawr, via a separate stand-alone NGINX or Varnish instance or something similar, but this is very unappealing from a complexity standpoint.
-
 We could attempt to optimize the Gafaelfawr request rather than avoid it.
 Currently, every authorization check requires a call to Redis.
 That call, at least, could be avoided by adding an additional in-memory cache similar to that used in ingress-nginx currently, using the method and the ``Authorization`` and ``Cookie`` headers as keys.
@@ -281,6 +279,61 @@ We would have to experiment to see if those requests were more efficient; they m
 
 In the most extreme case, it may be possible to implement a caching layer for the external authorization check in another, faster programming language (Rust or Go) with gRPC support, and have it call out to the Gafaelfawr Python backend only when needed.
 This is a lot of additional complexity, however, and should only be considered if the lack of caching causes unacceptable performance degredation and we can't find a better alternative.
+
+It is possible to set up a cache between the gateway and Gafaelfawr, via a separate stand-alone NGINX or `Vinyl cache`_ instance or something similar, but this is very unappealing from a complexity standpoint.
+Performance test results are available as HTML reports in the ``auth-cache-test-results`` directory in the source repository for this technote.
+Performance of a Vinyl cache as a sidecar container in the Gafaelfawr pod seems very close to a native NGINX cache.
+For some tests, the NGINX cache seems faster, and for some tests, the Vinyl cache seems faster, though there are some odd patterns in the data from both, with bursts of fast and slow requests.
+Both are clearly better than having no cache though.
+
+These are data from two different runs of 40 simulated users hitting `Muster`_ endpoints as fast as they can for 90s ("vus" is virtual users):
+
+.. code-block::
+   :caption: No auth cache
+
+    EXECUTION
+    iteration_duration.............: avg=151.07ms min=52.65ms med=131.88ms max=668.38ms p(90)=199.5ms  p(95)=287.57ms
+    iterations.....................: 23836  264.474208/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+    EXECUTION
+    iteration_duration.............: avg=169.92ms min=47.26ms med=135.63ms max=1.12s    p(90)=287.16ms p(95)=298.69ms
+    iterations.....................: 21195  235.237266/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+.. code-block::
+   :caption: Vinyl cache
+
+    EXECUTION
+    iteration_duration.............: avg=69.01ms  min=22.63ms med=43.96ms max=1.48s    p(90)=104ms    p(95)=192.39ms
+    iterations.....................: 52199  579.302505/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+    EXECUTION
+    iteration_duration.............: avg=88.34ms  min=23.09ms med=62.4ms  max=1.06s    p(90)=191.38ms p(95)=204.66ms
+    iterations.....................: 40744  452.491293/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+.. code-block::
+   :caption: NGINX cache
+
+    EXECUTION
+    iteration_duration.............: avg=87.25ms  min=22.46ms med=92.02ms max=1.06s    p(90)=187.45ms p(95)=197.4ms
+    iterations.....................: 41327  457.383666/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+    EXECUTION
+    iteration_duration.............: avg=71.27ms  min=22.04ms med=49.06ms max=580.78ms p(90)=103.33ms p(95)=191.38ms
+    iterations.....................: 50489  560.963539/s
+    vus............................: 40     min=40         max=40
+    vus_max........................: 40     min=40         max=40
+
+.. _Vinyl cache: https://vinyl-cache.org/
 
 Migrate to another Ingress controller
 =====================================

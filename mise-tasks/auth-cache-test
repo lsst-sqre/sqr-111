@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -e
+
+#MISE description="Run a series of performance tests against different Muster endpoints"
+
+#USAGE flag "-p --test-id <prefix>" help="A prefix for the results directory"
+#USAGE flag "-u --vus <vus>" help="Number of virtual users (default 40)"
+#USAGE flag "-d --duration <duration>" help="How long to run the tests for (default 90s)"
+
+if [ ! -f "secrets" ]; then
+  echo "Generate a Gafaelfawr token with the read:image scope. Create a file 'secrets' in the root of this repository with one line:"
+  echo "gafaelfawr_token=<your token here, without the brackets>"
+  exit 1
+fi
+
+prefix="${usage_prefix:-}"
+vus="${usage_vus:-40}"
+duration="${usage_duration:-90s}"
+resultsdir="auth-cache-test-results/$prefix$(date +"%Y-%m-%d-%H%M%S")-$vus-users-$duration-duration"
+mkdir -p "$resultsdir"
+
+export K6_WEB_DASHBOARD=true
+export K6_WEB_DASHBOARD_PERIOD=5s
+
+export K6_WEB_DASHBOARD_EXPORT="$resultsdir/no-cache.html"
+k6 run \
+  --secret-source=file=secrets \
+  --summary-mode full \
+  --vus="$vus" \
+  --duration="$duration" \
+  ./auth-cache-tests/no-cache.ts
+
+export K6_WEB_DASHBOARD_EXPORT="$resultsdir/nginx.html"
+k6 run \
+  --secret-source=file=secrets \
+  --summary-mode full \
+  --vus="$vus" \
+  --duration="$duration" \
+  ./auth-cache-tests/nginx.ts
+
+export K6_WEB_DASHBOARD_EXPORT="$resultsdir/vinyl.html"
+k6 run \
+  --secret-source=file=secrets \
+  --summary-mode full \
+  --vus="$vus" \
+  --duration="$duration" \
+  ./auth-cache-tests/vinyl.ts
