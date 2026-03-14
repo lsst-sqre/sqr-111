@@ -1,0 +1,3 @@
+[tools]
+usage = "latest"
+k6 = "latest"

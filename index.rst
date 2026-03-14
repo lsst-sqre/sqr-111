@@ -269,8 +269,6 @@ For Butler, uncached authorization checks caused noticable performance degredati
 There does not appear to be a straightforward path to resolve this gap.
 Neither the Traefik nor the Envoy projects appear interested in adding support, although the Traefik developers did indicate they would look at community PRs.
 
-It might be possible to set up a cache between the gateway and Gafaelfawr, via a separate stand-alone NGINX or Varnish instance or something similar, but this is very unappealing from a complexity standpoint.
-
 We could attempt to optimize the Gafaelfawr request rather than avoid it.
 Currently, every authorization check requires a call to Redis.
 That call, at least, could be avoided by adding an additional in-memory cache similar to that used in ingress-nginx currently, using the method and the ``Authorization`` and ``Cookie`` headers as keys.
@@ -281,6 +279,42 @@ We would have to experiment to see if those requests were more efficient; they m
 
 In the most extreme case, it may be possible to implement a caching layer for the external authorization check in another, faster programming language (Rust or Go) with gRPC support, and have it call out to the Gafaelfawr Python backend only when needed.
 This is a lot of additional complexity, however, and should only be considered if the lack of caching causes unacceptable performance degredation and we can't find a better alternative.
+
+It is possible to set up a cache between the gateway and Gafaelfawr, via a separate `Vinyl cache`_ instance or something similar, but this is very unappealing from a complexity standpoint.
+Performance of a Vinyl cache as a sidecar container in the Gafaelfawr pod seems very close to a native NGINX cache, despite the extra network hop involved.
+There is a slightly odd pattern in the data where requests-per-second goes higher and lower every ~60s, but this pattern is present in the no-cache tests too.
+You can see this in graphs of metrics over time by opening the files in the ``auth-cache-test-results/2026-03-16-120408-40-users-600s-duration`` directory in a browser.
+
+These are data from 40 simulated users hitting `Muster`_ endpoints as fast as they can for 10 minutes: ("vus" is virtual users):
+
+.. code-block::
+   :caption: No auth cache
+
+    EXECUTION
+    iteration_duration.............: avg=149.04ms min=29.83ms med=137.41ms max=876.41ms p(90)=196.48ms p(95)=204.26ms
+    iterations.....................: 161010 268.292831/s
+    vus............................: 40     min=40          max=40
+    vus_max........................: 40     min=40          max=40
+
+.. code-block::
+   :caption: Vinyl cache
+
+    EXECUTION
+    iteration_duration.............: avg=66.17ms  min=21.32ms med=43.13ms max=1.46s    p(90)=100.17ms p(95)=104.54ms
+    iterations.....................: 362524 604.174278/s
+    vus............................: 40     min=40          max=40
+    vus_max........................: 40     min=40          max=40
+
+.. code-block::
+   :caption: NGINX cache
+
+    EXECUTION
+    iteration_duration.............: avg=65.42ms  min=19.91ms med=42.25ms max=1.21s    p(90)=100.01ms p(95)=104.17ms
+    iterations.....................: 366684 611.103082/s
+    vus............................: 40     min=40          max=40
+    vus_max........................: 40     min=40          max=40
+
+.. _Vinyl cache: https://vinyl-cache.org/
 
 Migrate to another Ingress controller
 =====================================
