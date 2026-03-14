@@ -49,3 +49,33 @@ Editing this technical note
 The main content of this technote is in ``index.rst`` (a reStructuredText file).
 Metadata and configuration is in the ``technote.toml`` file.
 For guidance on creating content and information about specifying metadata and configuration, see the Documenteer documentation: https://documenteer.lsst.io/technotes.
+
+Auth cache performance testing
+==============================
+
+This repo contains a series of `k6`_ HTTP performance tests in the ``auth-cache-tests`` directory.
+Results from running these tests are in the ``auth-cache-test-results`` directory.
+These test an ingress with no auth caching, an ingress with the current NGINX auth caching, and an ingress with a `Vinyl cache`_.
+The Vinyl cache test expects a `muster` endpoint and a modified Gafaelfawr instance deployed to ``idfdev``.
+The necessary modifications are in these PRs:
+
+* https://github.com/lsst-sqre/gafaelfawr/pull/1425
+* https://github.com/lsst-sqre/phalanx/pull/6194
+* https://github.com/lsst-sqre/muster/pull/14
+
+Once this Gafaelfawr instance is deployed, you can run all of the tests by:
+
+#. Generate a Gafaelfawr token with the ``read:image`` scope
+#. Create a file called ``secrets`` at the root of this repo with a single line: ``gafaelfawr_token=<your token here, without the brackets>``
+#. Install k6
+#. Run the ``mise-tasks/auth-cache-test`` bash script.
+
+If you have `mise`_ installed, you can just run ``mise auth-cache-test`` from the root of this repo and it will install all of the dependencies you need.
+You can run ``mise auth-cache-test --help`` for a description of options you can pass to the script.
+
+The script will create a directory with HTML reports for the results of each of the three tests.
+
+.. _k6: https://k6.io/
+.. _Vinyl cache: https://vinyl-cache.org/
+.. _muster: https://github.com/lsst-sqre/muster/
+.. _mise: https://mise.jdx.dev/
