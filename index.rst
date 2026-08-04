@@ -52,6 +52,7 @@ Each will have to be converted to the Gateway API and a new gateway controller o
   This is used to reduce authentication traffic for services with large numbers of requests from the same user in short intervals, such as Nublado, the Portal, or the Butler server.
 - Gafaelfawr must be able to inject additional response headers that are added to the response from the backend before it is sent to the user.
   This is used for rate limiting status headers and will eventually be used to comply with the IVOA authentication standard.
+- Gafaelfawr must be able to remove its own cookie from any ``Cookie`` headers in the client request.
 
 Other Phalanx applications rely on the following integration points with ingress-nginx, unrelated to Gafaelfawr.
 
@@ -59,8 +60,12 @@ Other Phalanx applications rely on the following integration points with ingress
 - The Portal and the CADC TAP server rely on proxy URL rewriting to adjust the URLs returned by the backend application before returning them to the user.
 - Multiple Phalanx applications rely on URL rewriting to present a different URL to the backend service than the URL the client sent.
   I believe all instances of this only remove, add, or replace a static path prefix.
-- Some third-party applications may only support ``Ingress`` resources and not ``Gateway`` resources.
-  Any ingress-nginx replacement should therefore be able to serve ``Ingress`` resources, but does not need to support Gafaelfawr integration with an ``Ingress``.
+- Some third-party helm charts may only provision ``Ingress`` resources and not ``Gateway``/``HTTPRoute`` resources.
+  Currently, there are three 3rd-party charts we use that provision an ``Ingress``: ArgoCD, Vault, and Chronograf.
+  Of these, only Chronograf does not have the option to provision ``HTTPRoute`` resources.
+  We could easily write our own ``HTTPRoute`` to replace the simple ``Ingress`` that the chart provides.
+  Given that, we probably don't need to support ``Ingress`` resources in the clusters at all.
+  None of the Gateway API controllers will provision ``Ingress`` resources, so if we do decide we still need to support them, we will have to select an entirely different controller anyway.
 
 Migration plan
 ==============
@@ -131,12 +136,18 @@ Traefik appears to be missing the following necessary features:
   It will also complicate complying with the IVOA authentication requirement to include a response header with the authenticated username.
 - There does not appear to be any support for rewriting URLs returned by the backend before sending them to the client.
 
-Envoy
------
+Envoy Gateway
+-------------
 
 The `Envoy gateway`_ is a controller that implements the Gateway protocol by dynamically configuring the `Envoy proxy`_.
-The bare proxy supports everything we need (except auth caching), but the gateway operator does not yet expose all of the necessary config to the Kubernetes API.
+If we were going to choose an Envoy-based controller, I would choose :ref:`kgateway` over Envoy Gateway, because:
 
+* Kgateway is now a CNCF project.
+  The Envoy proxy is also a CNCF project, but I don't think that includes the Envoy Gateway project.
+* Kgateway seems to fix things and add features faster than Envoy Gateway.
+  It took two years to `add support for allowed_client_headers_on_success <github.com/envoyproxy/gateway/issues/3787>`_ in Envoy Gateway.
+  `The same feature <https://github.com/kgateway-dev/kgateway/issues/13594>`_ took 4 months in Kgateway.
+* Kgateway does better on the :ref:`benchmarks`, though note the caveats with those benchmarks.
 
 .. _Envoy proxy: https://www.envoyproxy.io/
 .. _Envoy gateway: https://gateway.envoyproxy.io/docs/
@@ -144,7 +155,7 @@ The bare proxy supports everything we need (except auth caching), but the gatewa
 External auth is configured by using the `ext_authz filter <https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_authz_filter>`__.
 This filter enables calling out to either an HTTP or GRPC-based auth server and manipulating the request to the backend and the response to the client based on the response from the auth server.
 
-Both the `gRPC protocol for external auth <https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto>`__ and the `HTTP configuration <https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto#envoy-v3-api-msg-extensions-filters-http-ext-authz-v3-httpservice>`__ support all of the auth features we need, but the gateway API does not expose all of the necessary config.
+Both the `gRPC protocol for external auth <https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/auth/v3/external_auth.proto>`__ and the `HTTP configuration <https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_authz/v3/ext_authz.proto#envoy-v3-api-msg-extensions-filters-http-ext-authz-v3-httpservice>`__ support almost all of the auth features we need, but the gateway API does not expose all of the necessary config.
 This is not a problem with the gRPC interface because all of the necessary info is in the gRPC messages themselves, and nothing needs to be configured in the proxy.
 Gafaelfawr could gain support for the gRPC protocol, and in some ways it would be an improvement over the way external auth is currently handled.
 For example, only one endpoint would be required, since all of the necessary information is in the request body.
@@ -171,18 +182,21 @@ This would require a substantial redesign of Gafaelfawr's request flow, however.
      - yes
    * - Accepted: headers to client
      - yes
-     - **no** [#]_
+     - yes
    * - Redirect to login
      - **no**
      - **no** [#]_
    * - Cache auth responses
      - **no**
+     - yes
+   * - Remove Gafaelfawr cookie
      - **no**
+     - **no**
+   * - Session affinity
+     - yes
+     - yes
 
 .. [#] Though the whole header passing API in the gateway is currently pretty buggy, as seen in `this GitHub issue <https://github.com/envoyproxy/envoy/issues/41828#issuecomment-3766420747>`__
-.. [#] There is a good chance that this will be supported by the gateway in the future, though who knows when.
-   `This GitHub comment <https://github.com/envoyproxy/envoy/issues/41828#issuecomment-3766295193>`__ suggests that folks are working on improving the whole external auth API.
-   In the meantime, this could maybe be done with `PatchPolicy <https://gateway.envoyproxy.io/docs/tasks/extensibility/envoy-patch-policy/>`__, but not recommended.
 .. [#] Gafaelfawr would have to return a 3xx response with the correct location
 
 One other way The HTTP option is incompatible with Gafaelfawr is that it always appends the path of the request to the auth server path.
@@ -197,20 +211,108 @@ Envoy appears to be missing the following necessary features:
 - Envoy `does not support caching of external authentication results <https://github.com/envoyproxy/envoy/issues/3023>`__.
 - There does not appear to be any support for rewriting URLs returned by the backend before sending them to the client.
   We may be able to use `a custom Lua extension <https://gateway.envoyproxy.io/docs/tasks/extensibility/lua/>`__ for this.
+- The Envoy Gateway HTTP ext auth feature does not allow us to ex
 
 Unlike some of the other new gateways, Envoy is written in C++, rather than in a memory-safe language such as Go.
 This is not as bad as being written in C, but it somewhat increases the risk of security vulnerabilities.
 
+According to :ref:`benchmarks`, Envoy Gateway is prone to interruptions when updating routes.
+
+.. _agentgateway:
+
+Agentgateway
+------------
+
+Agentgateway_ is the newest Gateway API controller on this list.
+It is managed by the same folks that currently manage :ref:`kgateway`.
+It started as a bunch of AI-specfic features on top of Kgateway, but it has evolved into a completely standalone controller with its own custom proxy written in Rust.
+It has a ton of AI related features that we don't need, but it has almost all of the features that we do need. A brand new proxy written in a memory-safe language is great, but it is also a bit scary to adopt something that has seen little real-world testing into such a security-critical and commonly vulnerable place in our architecture.
+
+It is an accepted project of the the `Agentic AI Foundation`_ (AAIF), which is an "open foundation under the Linux Foundation that hosts open protocols and open source projects for agentic AI, including the Model Context Protocol (MCP), goose, AGENTS.md, Agent2Agent (A2A) and agentgateway."
+This maybe makes it less likely to be abandoned in the future, though the AAIF is focused on AI/Agentic functionality, rather than general Kubernetes functionality like the CNCF.
+
+It is one of two gateway controllers that support external auth response caching (:ref:`nginx-gateway` is the other).
+It does support filtering the Gafaelfawr cookie from the upstream request, but it requires using a `CEL expression`_ to directly manipulate the cookie header, which is a bit scary.
+
+One big difference between the Agentgateway proxy and NGINX is that the Agentgateway proxy does not buffer requests to disk.
+It either streams them entirely, or buffers them in memory.
+The only way we can set a limit is if we configure memory buffering with a limit.
+Our current `ingress-nginx` 2GB request buffering limit would be too big to buffer entirely in memory.
+
+.. list-table:: Agentgateway differentiating features support
+   :header-rows: 1
+
+   * - Feature
+     - Support
+   * - External auth
+     - yes, but auth request uses the incoming request method, not just GET
+   * - Redirect to login
+     - yes
+   * - Cache auth responses
+     - yes, but it will cache them all, we can't filter by status code
+   * - Remove Gafaelfawr cookie from request to upstream
+     - yes, with a CEL expression
+   * - Session affinity
+     - yes, but it doesn't set its own cookie, it hashes something already in the request, like the gafaelfawr cookie
+   * - Limit request body to 2GB
+     - **no**
+   * - Rewrite redirect Location's
+     - yes
+   * - Rewrite `Server` header
+     - yes
+
+.. _Agentgateway: https://agentgateway.dev
+.. _Agentic AI Foundation: https://aaif.io
+.. _CEL expression: https://agentgateway.dev/docs/standalone/latest/reference/cel/
+
+
+.. _kgateway:
+
 Kgateway
 --------
 
-Kgateway_ is, so far as I can tell, a wrapper around Envoy with a lot of tacked-on AI marketing buzzwords.
-It appears to have all of the same tradeoffs as Envoy for Phalanx.
-None of the `advantages over Envoy <https://kgateway.dev/docs/envoy/latest/faqs/#whats-the-difference-between-kgateway-and-envoy>`__ appear to be relevant for our use case.
+Kgateway_ was a wrapper around Envoy with a lot of tacked-on AI marketing buzzwords.
+It is still a wrapper around Envoy, but the AI marketing buzzword implementation has moved to :ref:`agentgateway`.
 
+Kgateway has been accepted into the `Cloud Native Computing Foundation`_ (CNCF), which is a part of the `Linux Foundation`.
+This maybe makes it less likely to be abandoned in the future.
+
+Its HTTP external auth implementation is more configurable than Envoy Gateway's, but some things we need are still only possible with the gRPC external auth interface.
+
+Like the Agentgateway proxy, one big difference between the Envoy proxy and NGINX is that the Envoy proxy does not buffer requests to disk.
+It either streams them entirely, or buffers them in memory.
+
+.. list-table:: Kgateway differentiating features support
+   :header-rows: 1
+
+   * - Feature
+     - Support
+   * - External auth
+     - yes, but auth request uses the incoming request method, not just GET
+   * - Redirect to login
+     - **no** - but it would return a 301 from Gafaelfawr to the downstream
+   * - Cache auth responses
+     - **no**
+   * - Remove Gafaelfawr cookie from request to upstream
+     - **no**, only with gRPC external auth
+   * - Session affinity
+     - yes
+   * - Limit request body to 2GB
+     - **no**
+   * - Rewrite redirect Location's
+     - almost, it may send an empty ``Location`` header on responses that don't have one. It happens via a jinja-like templating language embedded in a ``TrafficPolicy``.
+   * - Rewrite `Server` header
+     - yes
+
+
+.. _Cloud Native Computing Foundation: https://www.cncf.io/projects/kgateway/
 .. _Kgateway: https://kgateway.dev/docs/envoy/latest/about/overview/
 
+It does well in the Gateway controller benchmarks, but remember those are produced by the makers of Kgateway.
+
 The documentation is quite nice and easy to follow, though, so it may be worth a closer look.
+
+.. _Linux Foundation: https://www.linuxfoundation.org
 
 .. _nginx-gateway:
 
@@ -232,6 +334,32 @@ There does not appear to be any native support for setting it up, so the full ba
 NGINX is written in C and does not have a great security track record.
 Ideally, this replacement project would let us migrate away from an ingress or gateway written in a memory-unsafe language prone to security issues.
 
+Among Agentgateway, Kgateway, and NGINX Gateway Fabric, this is the support for the differentiating features, with the caveat above that many of these would need to be implenented with raw config snippets:
+
+.. list-table:: NGINX Gateway Fabric differentiating features support
+   :header-rows: 1
+
+   * - Feature
+     - Support
+   * - External auth
+     - yes
+   * - Redirect to login
+     - yes
+   * - Cache auth responses
+     - yes
+   * - Remove Gafaelfawr cookie from request to upstream
+     - yes
+   * - Session affinity
+     - yes
+   * - Limit request body to 2GB
+     - yes
+   * - Rewrite redirect Location's
+     - yes
+   * - Rewrite `Server` header
+     - **no**
+
+.. _haproxy:
+
 HAProxy
 -------
 
@@ -240,41 +368,42 @@ I was unable to determine whether it supported any of the features we need.
 
 .. _HAProxy: https://www.haproxy.com/documentation/kubernetes-ingress/gateway-api/
 
+.. _benchmarks:
+
+Benchmarks
+==========
+
+Some folks have done some `Gateway API controller benchmarks`_ that compare some of the controllers we are considering.
+These are interesting, but come with some large caveats:
+
+* They are almost a year out of date at the time of this writing.
+  Someone else (not the orignal developer) has forked the original repo and generated some `updated benchmarks`_.
+* The original benchmarks were done by a https://solo.io employee, the company behind Agentgateway, Kgateway, and Istio at the time the benchmarks were published, all of which appear in the benchmarks.
+  This is prominently disclaimed in the benchmark write-up.
+* They do not focus on traffic performance, like throughput/latency through the proxy for different kinds of client requests.
+
+Even with these caveats, I think they are still worth looking at when we make our choice.
+The error benchmarks are especially relevant.
+
+.. _Gateway API controller benchmarks: https://github.com/howardjohn/gateway-api-bench
+.. _updated benchmarks: https://github.com/NoOverflow/gateway-api-bench/blob/main/README-v3.md
+
 .. _gaps:
 
-Gaps
-====
-
-The two main gaps in the available Gateway API implementations appear to be response URL rewriting and caching of external authentication replies.
-
-Response URL rewriting
-----------------------
-
-Currently, the Portal and the CADC TAP server both rely on ingress-nginx's ability to rewrite ``Location`` headers in responses from the backend.
-This is configured with the ``proxy-redirect-from`` and ``proxy-redirect-to`` annotations.
-So far as I can tell, none of the Gateway API implementations support this.
-
-Given that we have contact with and some influence over the implementation of both software packages, we should hopefully be able to eliminate the need for this type of rewriting.
-The application needs to take a configuration option specifying the base path for its URLs and use that configuration when constructing URLs in ``Location`` headers.
-See, for example, how Argo CD supports this via the ``server.basehref`` and ``server.rootpath`` configuration parameters.
-
 External authentication caching
--------------------------------
+===============================
 
 Nublado, the Portal, and the Butler server rely on caching of external authentication responses from Gafaelfawr for up to five minutes.
 Without this support, every resource request to those services requires a request to Gafaelfawr, which can mean rather high load on Gafaelfawr and on the gateway given the number of resource requests.
 For Nublado and Portal, this means an extra request for every JavaScript AJAX request.
 For Butler, uncached authorization checks caused noticable performance degredation for common use cases before caching was enabled.
 
-There does not appear to be a straightforward path to resolve this gap.
-Neither the Traefik nor the Envoy projects appear interested in adding support, although the Traefik developers did indicate they would look at community PRs.
-
-We could attempt to optimize the Gafaelfawr request rather than avoid it.
+If we choose a Gateway API controller without auth response caching support, we could attempt to optimize the Gafaelfawr request rather than avoid it.
 Currently, every authorization check requires a call to Redis.
 That call, at least, could be avoided by adding an additional in-memory cache similar to that used in ingress-nginx currently, using the method and the ``Authorization`` and ``Cookie`` headers as keys.
 It's not clear whether that would be sufficient to make an approach without gateway-side caching viable, since each request would still have to pay the cost of parsing the Gafaelfawr request in Python.
 
-Using Envoy does open up some additional possibilities since with Envoy the external auth request could be a gRPC request.
+We could use a Gateway API controller that allows us to use gRPC for the external auth request.
 We would have to experiment to see if those requests were more efficient; they might be, since the parsing of the request is done via protobuf and should be faster than the Python-based parsing of conventional HTTP query parameters.
 
 In the most extreme case, it may be possible to implement a caching layer for the external authorization check in another, faster programming language (Rust or Go) with gRPC support, and have it call out to the Gafaelfawr Python backend only when needed.
