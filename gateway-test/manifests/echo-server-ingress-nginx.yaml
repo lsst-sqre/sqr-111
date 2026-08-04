@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/auth-method: GET
+    nginx.ingress.kubernetes.io/auth-response-headers: Authorization,X-Auth-To-Upstream-Allowed
+    # nginx.ingress.kubernetes.io/auth-signin: https://example.com/blah
+    nginx.ingress.kubernetes.io/auth-url: http://auth-server.auth-server.svc.cluster.local:8000/ingress/auth?scope=exec:admin&service=mobu
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      auth_request_set $auth_error_body $upstream_http_x_error_body;
+      auth_request_set $auth_status $upstream_http_x_error_status;
+      auth_request_set $auth_auth_to_client_allowed $upstream_http_x_auth_to_client_allowed;
+      auth_request_set $auth_auth_to_client_denied $upstream_http_x_auth_to_client_denied;
+      auth_request_set $auth_retry_after $upstream_http_retry_after;
+      auth_request_set $auth_www_authenticate $upstream_http_www_authenticate;
+      auth_request_set $auth_status $upstream_http_x_error_status;
+      more_set_headers "X-Auth-To-Client-Allowed: $auth_auth_to_client_allowed";
+      error_page 400 = @autherror;
+      error_page 401 = @autherror;
+      error_page 403 = @autherror;
+  name: echo-server-ingress-nginx
+  namespace: echo-server
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: echo-server-ingress-nginx.example.com
+      http:
+        paths:
+          - backend:
+              service:
+                name: echo-server
+                port:
+                  number: 8000
+            path: /
+            pathType: Prefix

@@ -1,0 +1,6 @@
+fix = true
+line-length = 79
+
+[lint]
+ignore = ["PGH003"]
+select = ["I"]

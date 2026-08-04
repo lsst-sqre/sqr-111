@@ -1,0 +1,187 @@
+# Resources for routing and authenticating traffic to echo-server using the
+# agentgateway controller
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo-server-agentgateway
+  namespace: echo-server
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      namespace: agentgateway-system
+  hostnames:
+    - "echo-server-agentgateway.example.com"
+  rules:
+    - backendRefs:
+        - name: echo-server
+          port: 8000
+      matches:
+        - path:
+            value: /foo
+---
+# An http route to attach an AgentPolicy with auth caching
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo-server-agentgateway-auth-caching
+  namespace: echo-server
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      namespace: agentgateway-system
+  hostnames:
+    - "echo-server-agentgateway.example.com"
+  rules:
+    - backendRefs:
+        - name: echo-server
+          port: 8000
+      matches:
+        - path:
+            value: /caching-foo
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  namespace: echo-server
+  name: auth-agentgateway
+  labels:
+    app: auth-agentgateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: echo-server-agentgateway
+  backend:
+    sessionAffinity:
+      source: >-
+        "x-use-session-affinity" in request.headers
+          ? request.headers.cookie("gafaelfawr")
+          : ""
+  traffic:
+    extAuth:
+      backendRef:
+        name: auth-server
+        namespace: auth-server
+        port: 8000
+      http:
+        path: '"/ingress/auth"'
+
+        allowedRequestHeaders:
+          - cookie
+
+        addRequestHeaders:
+          # Preserve every original Authorization field separately.
+          x-auth-authorization-values: |
+            toJson(default(request.headers.raw()["authorization"], []))
+
+        allowedResponseHeaders:
+          - x-auth-to-upstream-allowed
+
+        # These are internal auth results; don't forward the synthetic
+        # response headers themselves.
+        responseMetadata:
+          cookieToUpstream: |
+            response.headers["x-auth-cookie-to-upstream"]
+          headerFromAuthResponse: |
+            response.headers["x-auth-to-client-allowed"]
+
+    transformation:
+      request:
+        set:
+          - name: cookie
+            value: |
+              extauthz.cookieToUpstream
+                .with(c, c == "" ? null : c)
+        remove:
+          - authorization
+
+          # Defense against a client injecting our private header name.
+          - x-auth-authorization-values
+          - x-auth-cookie-to-upstream
+          - x-auth-to-client-allowed
+      response:
+        set:
+          - name: x-auth-to-client-allowed
+            value: extauthz.headerFromAuthResponse
+          - name: x-debug-affinity-key
+            value: |
+              "x-use-session-affinity" in request.headers
+                ? request.headers.cookie("gafaelfawr")
+                : ""
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  namespace: echo-server
+  name: auth-agentgateway-caching
+  labels:
+    app: auth-agentgateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: echo-server-agentgateway-auth-caching
+  backend:
+    sessionAffinity:
+      source: >-
+        "x-use-session-affinity" in request.headers
+          ? request.headers.cookie("gafaelfawr")
+          : ""
+  traffic:
+    extAuth:
+      backendRef:
+        name: auth-server
+        namespace: auth-server
+        port: 8000
+      cache:
+        key:
+          - request.method
+          - 'request.headers["cookie"]'
+          - 'request.headers["authorization"]'
+        ttl: 5m
+      http:
+        path: '"/ingress/auth"'
+
+        allowedRequestHeaders:
+          - cookie
+          - x-delay-auth
+
+        addRequestHeaders:
+          # Preserve every original Authorization field separately.
+          x-auth-authorization-values: |
+            toJson(default(request.headers.raw()["authorization"], []))
+
+        allowedResponseHeaders:
+          - x-auth-to-upstream-allowed
+
+        # These are internal auth results; don't forward the synthetic
+        # response headers themselves.
+        responseMetadata:
+          cookieToUpstream: |
+            response.headers["x-auth-cookie-to-upstream"]
+          headerFromAuthResponse: |
+            response.headers["x-auth-to-client-allowed"]
+
+    transformation:
+      request:
+        set:
+          - name: cookie
+            value: |
+              extauthz.cookieToUpstream
+                .with(c, c == "" ? null : c)
+        remove:
+          - authorization
+
+          # Defense against a client injecting our private header name.
+          - x-auth-authorization-values
+          - x-auth-cookie-to-upstream
+          - x-auth-to-client-allowed
+      response:
+        set:
+          - name: x-auth-to-client-allowed
+            value: extauthz.headerFromAuthResponse
+          - name: x-debug-affinity-key
+            value: |
+              "x-use-session-affinity" in request.headers
+                ? request.headers.cookie("gafaelfawr")
+                : ""

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#MISE description = "Get the ip address and port of a gateway loadbalancer"
+#USAGE arg "<gateway>" {
+#USAGE   help "The gateway to get the address for"
+#USAGE   choices "agentgateway" "kgateway" "ingress-nginx"
+#USAGE }
+
+case "${usage_gateway?}" in
+"agentgateway")
+  namespace=agentgateway-system
+  service=agentgateway-proxy
+  ;;
+"kgateway")
+  namespace=kgateway-system
+  service=kgateway-proxy
+  ;;
+"ingress-nginx")
+  namespace=ingress-nginx
+  service=ingress-nginx-controller
+  ;;
+*)
+  echo "Invalid gateway"
+  exit 1
+  ;;
+esac
+
+host=$(
+  kubectl get svc $service \
+    -n $namespace \
+    -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}"
+)
+
+port=$(
+  kubectl get svc $service \
+    -n $namespace \
+    -o jsonpath="{.status.loadBalancer.ingress[0].ports[0].port}"
+)
+
+echo "$host:$port"

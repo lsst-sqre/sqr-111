@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run tests against the all gateways/ingresses"
+#USAGE arg "[args]" var=#true help="Additional args to pass to pytest"
+
+# Convert to bash array as per
+# https://mise.jdx.dev/tasks/task-arguments#positional-arguments-arg
+eval "args=(${usage_args})"
+
+mise test kgateway "${args[@]}"
+mise test agentgateway "${args[@]}"
+mise test ingress-nginx "${args[@]}"

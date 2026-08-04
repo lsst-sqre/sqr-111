@@ -1,0 +1,19 @@
+[project]
+name = "gateway-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Dan Fuchs", email = "danfuchs@slac.stanford.edu" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "pytest>=9.1.1",
+    "requests>=2.34.2",
+
+    # These aren't needed to run the tests, but they are used in the deployed
+    # programs, and including them here makes it easier to develop these apps
+    # locally.
+    "fastapi>=0.161.0",
+    "uvicorn>=0.54.0",
+]
