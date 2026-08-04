@@ -1,0 +1,50 @@
+# Resources for routing and authenticating traffic to echo-server using the
+# agentgateway controller
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo-server-agentgateway
+  namespace: echo-server
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      namespace: agentgateway-system
+  hostnames:
+    - "echo-server-agentgateway.example.com"
+  rules:
+    - backendRefs:
+        - name: echo-server
+          port: 8000
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  namespace: echo-server
+  name: auth-agentgateway
+  labels:
+    app: auth-agentgateway
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: echo-server-agentgateway
+  traffic:
+    extAuth:
+      backendRef:
+        name: auth-server
+        namespace: auth-server
+        port: 8000
+      http:
+        path: |
+          "/ingress/auth"
+        allowedRequestHeaders:
+          - authorization
+        allowedResponseHeaders:
+          - x-auth-to-upstream-allowed
+        responseMetadata:
+          headerFromAuthResponse: 'response.headers["x-auth-to-client-allowed"]'
+    transformation:
+      response:
+        set:
+          - name: x-auth-to-client-allowed
+            value: extauthz.headerFromAuthResponse

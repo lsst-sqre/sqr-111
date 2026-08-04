@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#MISE description = "Install all of the Gateway API controllers we're testing"
+
+# Gateway API CRDs
+echo "Install Gateway API CRDs"
+echo "We're pinning the Gateway API CRDs to 1.5.0 because cloud-provider-kind doesn't support 1.6.0 yet"
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
+echo "Installed Gateway API CRDs"
+
+# kgateway
+# Adapted from https://kgateway.dev/docs/envoy/latest/quickstart/
+echo "Install kgateway"
+helm upgrade -i kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/kgateway-crds \
+  --create-namespace --namespace kgateway-system \
+  --version v2.4.3 \
+  --set controller.image.pullPolicy=Always
+helm upgrade -i kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
+  --namespace kgateway-system \
+  --version v2.4.3 \
+  --set controller.image.pullPolicy=Always \
+  --wait
+echo "Installed kgateway"
+
+# agentgateway
+# Adapted from https://agentgateway.dev/docs/kubernetes/latest/quickstart/
+echo "Install agentgateway"
+helm upgrade -i --create-namespace \
+  --namespace agentgateway-system \
+  --version v1.5.0 agentgateway-crds oci://cr.agentgateway.dev/charts/agentgateway-crds
+helm upgrade -i -n agentgateway-system agentgateway oci://cr.agentgateway.dev/charts/agentgateway \
+  --version v1.5.0
+echo "Installed agentgateway"
+
+# ingress-nginx
+helm upgrade --install ingress-nginx ingress-nginx \
+  --repo https://kubernetes.github.io/ingress-nginx \
+  --namespace ingress-nginx --create-namespace \
+  --values helm/values-ingress-nginx.yaml
+
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=120s

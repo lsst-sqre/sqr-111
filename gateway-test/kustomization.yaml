@@ -1,0 +1,18 @@
+resources:
+  - manifests/kgateway.yaml
+  - manifests/agentgateway.yaml
+  - manifests/auth-server.yaml
+  - manifests/echo-server.yaml
+  - manifests/echo-server-kgateway.yaml
+  - manifests/echo-server-agentgateway.yaml
+  - manifests/echo-server-ingress-nginx.yaml
+
+configMapGenerator:
+  - name: auth-server
+    namespace: auth-server
+    files:
+      - apps/auth_server.py
+  - name: echo-server
+    namespace: echo-server
+    files:
+      - apps/echo_server.py

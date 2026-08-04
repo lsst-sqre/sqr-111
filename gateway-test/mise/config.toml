@@ -1,0 +1,15 @@
+[tools]
+"go:sigs.k8s.io/cloud-provider-kind" = "latest"
+helm = "latest"
+kind = "latest"
+pitchfork = "latest"
+python = "latest"
+uv = "latest"
+
+[settings]
+python.uv_venv_auto = "create|source"
+
+[env]
+_.python.venv = { path = ".venv" }
+KIND_CLUSTER_NAME = "gateway-test"
+KUBECONFIG = "kube/kind-gateway-test-kubeconfig.yaml"
