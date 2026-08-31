@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# [MISE] description = "Make a request to the echo server via the specified gateway"
+# [USAGE] arg "<gateway>" {
+# [USAGE]   help "The gateway to get the address for"
+# [USAGE]   choices "agentgateway" "kgateway" "ingress-nginx"
+# [USAGE] }
+# [USAGE] arg "[args]" var=#true help="Additional args to pass to curl"
+
+case "${usage_gateway?}" in
+"agentgateway")
+  gateway_address=$(mise run get-address agentgateway)
+  gateway_host=echo-server-agentgateway.example.com
+  ;;
+"kgateway")
+  gateway_address=$(mise run get-address kgateway)
+  gateway_host=echo-server-kgateway.example.com
+  ;;
+"ingress-nginx")
+  gateway_address=$(mise run get-address ingress-nginx)
+  gateway_host=echo-server-ingress-nginx.example.com
+  ;;
+*)
+  echo "Invalid gateway"
+  exit 1
+  ;;
+esac
+
+# Convert to bash array as per
+# https://mise.jdx.dev/tasks/task-arguments#positional-arguments-arg
+eval "args=(${usage_args:?})"
+curl -v -H "host: $gateway_host" "$gateway_address/some/path?with=some&querystring=params" "${args[@]}"

@@ -1,0 +1,3 @@
+[daemons.cloud-provider-kind]
+run = "cloud-provider-kind"
+mise = true

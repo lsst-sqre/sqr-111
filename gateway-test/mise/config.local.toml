@@ -1,0 +1,3 @@
+[tools]
+"pipx:basedpyright" = "latest"
+ruff = "latest"
