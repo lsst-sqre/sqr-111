@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#MISE description="Create a KIND cluster with a local docker registry configured"
+# Uses instructions from the KIND docs:
+# https://kind.sigs.k8s.io/docs/user/local-registry/
+
+reg_name=kind-registry
+reg_port="5001"
+reg_dir="/etc/containerd/certs.d/localhost:${reg_port}"
+
+# 1. Start the local registry container on the host
+if [ "$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true)" != 'true' ]; then
+  echo "Starting local registry container: ${reg_name}..."
+  docker run \
+    -d --restart=always -p "127.0.0.1:${reg_port}:5000" --network bridge --name "${reg_name}" \
+    registry:3
+  echo "Started local registry container"
+else
+  echo "Registry container: ${reg_name} already running"
+fi
+
+# 2. Create kind cluster
+echo "Creating KIND cluster..."
+kind create cluster
+echo "Created KIND cluster"
+
+# Add the registry config to the nodes
+#
+# This is necessary because localhost resolves to loopback addresses that are
+# network-namespace local.
+# In other words: localhost in the container is not localhost on the host.
+#
+# We want a consistent name that works from both ends, so we tell containerd to
+# alias localhost:${reg_port} to the registry container when pulling images
+echo "Adding registry config to KIND nodes..."
+for node in $(kind get nodes); do
+  docker exec "${node}" mkdir -p "${reg_dir}"
+  cat <<EOF | docker exec -i "${node}" cp /dev/stdin "${reg_dir}/hosts.toml"
+[host."http://${reg_name}:5000"]
+EOF
+done
+echo "Added registry config to KIND nodes"
+
+# 4. Connect the registry to the cluster network if not already connected
+# This allows kind to bootstrap the network but ensures they're on the same network
+echo "Connecting local registry congainer to KIND cluster network..."
+if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' "${reg_name}")" = 'null' ]; then
+  docker network connect "kind" "${reg_name}"
+fi
+echo "Connected local registry congainer to KIND cluster network"
+
+# 5. Document the local registry
+# https://github.com/kubernetes/enhancements/tree/master/keps/sig-cluster-lifecycle/generic/1755-communicating-a-local-registry
+echo "Adding local registry documentation to KIND cluster..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-registry-hosting
+  namespace: kube-public
+data:
+  localRegistryHosting.v1: |
+    host: "localhost:${reg_port}"
+    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+EOF
+echo "Added local registry documentation to KIND cluster"
+
+# Start other daemons, like the cloud-provider-kind LoadBalancer service
+# provisioner
+echo "Starting other daemons..."
+pitchfork start --all
+echo "Started other daemons"
+
+echo "Installing Gateway API controllers..."
+mise install-gateways
+echo "Installed Gateway API controllers"
+
+echo "Installing apps and gateways and routes..."
+mise apply-kubernetes
+echo "Installed apps and gateways and routes"

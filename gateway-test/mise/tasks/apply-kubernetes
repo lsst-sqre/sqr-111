@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description = "Apply all kubernetes resources"
+
+kubectl apply -k .

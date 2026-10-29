@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#MISE description="Run tests against the specified gateway"
+#USAGE arg "<gateway>" {
+#USAGE   help "The gateway to run the tests against"
+#USAGE   choices "agentgateway" "kgateway" "ingress-nginx"
+#USAGE }
+#USAGE arg "[args]" var=#true help="Additional args to pass to pytest"
+GATEWAY_ADDRESS=$(mise get-address "${usage_gateway:?}")
+GATEWAY_HOST="echo-server-${usage_gateway:?}.example.com"
+export GATEWAY_ADDRESS
+export GATEWAY_HOST
+
+# Convert to bash array as per
+# https://mise.jdx.dev/tasks/task-arguments#positional-arguments-arg
+eval "args=(${usage_args})"
+
+pytest "${args[@]}"

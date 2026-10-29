@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Tear down local gateway testing infrastructure"
+reg_name=kind-registry
+
+echo "Deleting KIND cluster"
+kind delete cluster
+echo "Deleted KIND cluster"
+
+if [ "$(docker inspect -f '{{.State.Running}}' "${reg_name}" 2>/dev/null || true)" = 'true' ]; then
+  echo "Stopping and deleting local registry container: ${reg_name}"
+  docker stop "${reg_name}"
+  docker rm "${reg_name}"
+  echo "Stopped and deleted local registry container: ${reg_name}"
+else
+  echo "Registry container: ${usage_name} isn't running"
+fi
+
+echo "Stopping other daemons"
+pitchfork stop --all
+echo "Stopped other daemons"

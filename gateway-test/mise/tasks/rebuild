@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+#MISE description="Tear down and rebuild all gateway test infra"
+mise destroy
+mise build
