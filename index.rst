@@ -463,3 +463,394 @@ It theoretically supports all of the functionality of ingress-nginx because it t
 Unfortunately, it has the same problem as the :ref:`nginx-gateway`: very few of the features that we need appear to be supported out of the box.
 We would be required to write and maintain explicit NGINX configuration ourselves.
 
+.. _ai-conversion-table:
+
+ingress-nginx annotation conversions
+====================================
+
+Below is a table of how every ``ingress-nginx`` annotation we have in our ``idfprod`` cluster (as of early October, 2026) and every ``ingress-nginx`` config snippet option maps to features in :ref:`agentgateway`, :ref:`kgateway`, and :ref:`nginx-gateway`.
+This table was created with heavy LLM assistance.
+I (Dan Fuchs) have not verified every cell in this table, but I have verified the things that I refer to in each specific Gateway API controller section above.
+Now begin the robots' words:
+
+Comparison of ingress-nginx settings with kgateway 2.4.7, agentgateway 1.7.0,
+and NGINX Gateway Fabric (NGF) 2.8.0.
+"Native" refers to Gateway API or controller-policy support, not support for
+the ingress-nginx annotation itself. Features marked "partial" or "snippet"
+are not exact portable equivalents.
+
+External authentication
+-----------------------
+
+.. list-table:: External authentication
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - ingress-nginx feature / setting
+     - kgateway 2.4.7
+     - agentgateway 1.7.0
+     - NGF 2.8.0
+   * - ``auth-url``
+     - **Native HTTP ext auth:** ``TrafficPolicy.extAuth`` plus ``GatewayExtension.extAuth.httpService``.
+     - **Native:** ``AgentgatewayPolicy.traffic.extAuth.http``.
+     - **Native:** experimental Gateway API ``HTTPRoute`` ``ExternalAuth`` filter.
+   * - Auth URL path and query parameters
+     - ``httpService.pathPrefix`` prepends to the original URI, not an exact arbitrary URL override. Verify Gafaelfawr query parameters.
+     - ``http.path`` CEL can construct the auth path and query.
+     - ``externalAuth.http.path`` supplies a fixed auth path; query-string equivalence needs verification.
+   * - ``auth-method: GET``
+     - No exposed exact HTTP ext-auth method override; typically forwards the original request method.
+     - No exposed HTTP ext-auth method override; uses original method.
+     - Internal auth subrequest generally uses GET, but verify the generated NGINX configuration and forwarded Method header.
+   * - Forward Cookie and Authorization to auth server
+     - Explicitly include ``cookie`` in ``GatewayExtension.extAuth.headersToForward``.
+     - ``http.allowedRequestHeaders``; configure both headers.
+     - ``externalAuth.http.allowedHeaders``.
+   * - ``auth-response-headers`` to backend
+     - **Native:** ``authorizationResponse.headersToBackend``.
+     - **Native:** ``http.allowedResponseHeaders``.
+     - **Native:** ``http.allowedResponseHeaders``.
+   * - Auth denial headers to client
+     - **Native:** ``authorizationResponse.headersToClient``.
+     - Denied HTTP response headers can be passed to the client.
+     - ``WWW-Authenticate`` on 401; arbitrary denial headers need custom handling.
+   * - Auth denial body to client
+     - **Native:** denied response body.
+     - **Native:** can preserve denied HTTP response body.
+     - Generated NGINX error body by default; custom error handling for exact matching.
+   * - Auth success headers to client
+     - **Native:** ``authorizationResponse.headersToClientOnSuccess``.
+     - No dedicated direct mapping; ``responseMetadata`` and response transformation may work.
+     - No native ExternalAuth success-response-to-client mapping; needs custom handling.
+   * - ``auth-signin``
+     - No direct equivalent; auth service can issue a redirect with ``Location`` forwarded.
+     - **Native:** ``http.redirect`` for 401/403; responds with 302.
+     - ``error_page`` or redirect snippet; outside the standard ExternalAuth filter.
+   * - ``auth-cache-key``
+     - No native HTTP external-auth cache.
+     - **Native:** ``cache.key`` is an ordered list of CEL expressions.
+     - ``proxy_cache_key`` via snippets, in the auth subrequest context.
+   * - ``auth-cache-duration: 200 202 401 5m``
+     - No native HTTP external-auth cache.
+     - **Partial:** ``ttl: 5m`` caches successful 2xx and 401/403, not exactly 200/202/401.
+     - **Via snippets:** ``proxy_cache_valid 200 202 401 5m``.
+   * - Skip cache unless Cookie AND Authorization are present
+     - Requires external/custom cache.
+     - **Yes:** direct ``request.headers["cookie"]`` and ``request.headers["authorization"]`` CEL key expressions bypass cache on absent header.
+     - **Yes:** ``proxy_cache_bypass`` and ``proxy_no_cache`` conditions.
+   * - Auth service unavailable / failure mode
+     - ``failOpen`` and ``statusOnError``.
+     - ``failureMode: FailOpen`` or ``FailClosed``.
+     - NGINX ``auth_request`` generally fails closed; custom error handling via snippets.
+
+Routing, rewrites, headers, and cookies
+---------------------------------------
+
+.. list-table:: Routing, rewrites, headers, and cookies
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - ingress-nginx feature / setting
+     - kgateway 2.4.7
+     - agentgateway 1.7.0
+     - NGF 2.8.0
+   * - ``use-regex: "true"``
+     - **Native:** ``HTTPRoute`` ``RegularExpression`` path match.
+     - **Native:** regex path match.
+     - **Native:** regex path match; generated NGINX ``~`` matching can differ in case sensitivity from ingress-nginx ``~*``.
+   * - ``rewrite-target`` with ``$1``/``$2`` captures
+     - **Native:** ``TrafficPolicy.urlRewrite.pathRegex``.
+     - **Native:** CEL/regex path rewrite.
+     - **Snippet:** NGINX ``rewrite`` with captures; Gateway API ``URLRewrite`` has no regex capture substitution.
+   * - ``proxy-redirect-from``
+     - **Supported via** ``TrafficPolicy.transformation.response.set``: match
+       a prefix of the upstream ``Location`` and replace it. Unlike NGINX
+       ``proxy_redirect``, a missing ``Location`` may produce an empty header;
+       test before relying on exact equivalence.
+     - **Supported via** ``AgentgatewayPolicy.traffic.transformation.response.set``:
+       CEL can conditionally replace an upstream ``Location`` prefix. A missing
+       header makes the CEL lookup fail; agentgateway removes/omits ``Location``
+       rather than setting it to an empty string.
+     - **Snippet:** ``proxy_redirect FROM TO``.
+   * - ``proxy-redirect-to``
+     - Same kgateway response transformation, providing the replacement prefix;
+       the missing-``Location`` caveat still applies. Also does not reproduce
+       NGINX ``Refresh`` rewriting automatically.
+     - Same CEL response transformation, with the replacement prefix; no
+       empty-``Location`` caveat on absent headers. A CEL error for another
+       reason also removes ``Location``.
+     - **Snippet:** same ``proxy_redirect`` directive.
+   * - ``ssl-redirect: "true"``
+     - **Native:** ``HTTPRoute.RequestRedirect`` to HTTPS, 308.
+     - **Native:** ``HTTPRoute.RequestRedirect`` to HTTPS, 308.
+     - **Native:** same Gateway API filter.
+   * - ``affinity: cookie``
+     - **Native:** experimental Gateway API ``sessionPersistence`` with ``Cookie``; issues its own persistence cookie.
+     - **Partial:** ``backend.sessionAffinity.source`` hashes an existing request attribute or cookie; does not issue a cookie.
+     - **Native (NGINX OSS in 2.8):** experimental ``sessionPersistence`` with ``Cookie``; issues a cookie.
+   * - ``session-cookie-path: /portal/app``
+     - No exact exposed cookie-Path route policy; inspect resulting ``Set-Cookie``.
+     - Not applicable: agentgateway does not issue an affinity cookie.
+     - **Partial:** Path derived from route match; regex Portal routes need testing or refactoring.
+   * - ``session-cookie-change-on-failure: "true"``
+     - Healthy endpoint failover exists but does not exactly reproduce replacement-cookie behavior.
+     - Hashing remaps on endpoint changes; no managed replacement cookie.
+     - Persistence/failover exists; no exact exposed ingress-nginx switch.
+   * - ``proxy-cookie-path: /suit /portal/app``
+     - No native per-cookie ``Path`` rewrite; custom response processing.
+     - CEL response transform possible; repeated ``Set-Cookie`` fields require careful handling.
+     - **Snippet:** ``proxy_cookie_path /suit /portal/app``.
+   * - ``configuration-snippet`` (general)
+     - No raw NGINX snippets; use policies, routes, or ExtProc.
+     - No raw NGINX snippets; use CEL policies or ExtProc.
+     - **Supported escape hatch:** route-level ``SnippetsFilter``.
+   * - ``proxy_set_header X-Original-URI $request_uri``
+     - Header transformation; preserve original URI before rewrites.
+     - CEL request-header transformation using original URI.
+     - Header modifier can expand NGINX variables, or use snippet.
+   * - ``proxy_set_header X-Forwarded-Proto https``
+     - Request-header modifier and trusted-proxy configuration.
+     - Request-header modifier or CEL.
+     - Request-header modifier or snippet.
+   * - ``proxy_set_header X-Forwarded-Port 443``
+     - Request-header modifier.
+     - Request-header modifier.
+     - Request-header modifier or snippet.
+   * - ``proxy_set_header X-Forwarded-Path /portal/app``
+     - Request-header modifier.
+     - Request-header modifier.
+     - Request-header modifier or snippet.
+   * - ``more_set_headers "server: OpenCADC/cadc-rest"``
+     - **Supported:** configure Gateway-level
+       ``ListenerPolicy.default.httpSettings.serverHeaderTransformation: PassThrough``
+       and set ``Server: OpenCADC/cadc-rest`` on selected ``HTTPRoute`` resources using
+       ``ResponseHeaderModifier``. Alternatively, use ``Overwrite`` and
+       ``serverName`` on the ListenerPolicy for a Gateway-wide value. Envoy
+       otherwise overwrites ``Server`` by default; test this combination.
+     - **Supported natively:** route-level ``ResponseHeaderModifier`` or
+       ``AgentgatewayPolicy.traffic.headerModifiers.response.set`` with
+       ``Server: OpenCADC/cadc-rest``. No special listener configuration and
+       no CEL needed for a constant; a later transformation can still override it.
+     - ``ResponseHeaderModifier`` forbids ``Server``; requires NGINX-specific processing.
+
+Per-Ingress timeouts, request bodies, and buffering
+---------------------------------------------------
+
+.. list-table:: Per-Ingress timeouts, request bodies, and buffering
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - ingress-nginx feature / setting
+     - kgateway 2.4.7
+     - agentgateway 1.7.0
+     - NGF 2.8.0
+   * - ``proxy-connect-timeout`` (900, 1800)
+     - Backend connect-timeout setting; comparable.
+     - ``backend.tcp.connectTimeout``; comparable.
+     - **Exact NGINX directive:** ``ProxySettingsPolicy.timeout.connect``.
+   * - ``proxy-read-timeout`` (300, 900, 1800)
+     - Upstream stream/response timeout, but not identical idle-read semantics.
+     - ``traffic.timeouts.responseIdle`` and backend HTTP timeout; not identical.
+     - **Exact:** ``ProxySettingsPolicy.timeout.read``.
+   * - ``proxy-send-timeout`` (300, 900, 1800)
+     - No exposed independent NGINX-style upstream-write idle timeout.
+     - No equivalent independent upstream-write idle timeout.
+     - **Exact:** ``ProxySettingsPolicy.timeout.send``.
+   * - ``proxy-body-size: 0m`` (unlimited)
+     - Omit request-body limit; avoid buffering entire body solely for size enforcement.
+     - **Equivalent for streamed requests by default:** there is no general
+       request-body size cap on the ordinary proxy path. Do not enable
+       ``traffic.buffer.request`` to emulate unlimited uploads: buffering and
+       body-inspection/ExtProc policies have their own size/memory limits.
+     - **Exact:** ``ClientSettingsPolicy.body.maxSize: "0"``.
+   * - ``proxy-buffer-size: 24k`` (Portal admin)
+     - No exact per-route initial upstream-header buffer setting.
+     - No exact upstream-header buffer setting.
+     - **Exact:** ``ProxySettingsPolicy.buffering.bufferSize: "24k"``.
+   * - ``client-header-buffer-size: 24k``
+     - No migration required: unsupported/inert ingress-nginx Ingress annotation.
+     - Same.
+     - Same.
+   * - Request buffering
+     - No NGINX-style on-disk temporary-file buffering; filters can buffer in memory.
+     - Streams by default; explicit body buffering/inspection consumes memory.
+     - Native NGINX buffering and temporary files.
+
+Global ingress-nginx ConfigMap defaults
+---------------------------------------
+
+.. list-table:: Global ingress-nginx ConfigMap defaults
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - ingress-nginx feature / setting
+     - kgateway 2.4.7
+     - agentgateway 1.7.0
+     - NGF 2.8.0
+   * - ``proxy-body-size: 2g``
+     - No equivalent low-memory streaming cap via ``TrafficPolicy.buffer.maxRequestSize``; it buffers.
+     - No corresponding general 2 GiB streaming cap; ``traffic.buffer`` buffers bodies.
+     - **Native:** ``ClientSettingsPolicy.body.maxSize: "2g"``.
+   * - ``proxy-buffer-size: 64k``
+     - Different Envoy response-header/buffering controls; no exact route equivalent.
+     - No exact equivalent.
+     - **Native:** ``ProxySettingsPolicy.buffering.bufferSize: "64k"``.
+   * - ``proxy-busy-buffers-size: 64k``
+     - No exact equivalent.
+     - No exact equivalent.
+     - Field exists but validation requires busyBuffersSize > bufferSize; your equal 64k settings need adjustment or tested snippet.
+   * - ``large-client-header-buffers: 4 64k``
+     - Aggregate header-size limits (``ListenerPolicy.httpSettings.maxRequestHeadersKb``), not exact NGINX semantics.
+     - Frontend limits do not expose the exact NGINX 4 x 64k setting.
+     - **Snippet:** ``large_client_header_buffers 4 64k``.
+   * - ``compute-full-forwarded-for: "true"``
+     - Envoy XFF append and trusted-hop handling; verify behavior.
+     - Header/CEL transformations; no exact trusted-hop policy.
+     - ``$proxy_add_x_forwarded_for``; inspect NGINX RealIP effects.
+   * - ``use-forwarded-headers: "true"``
+     - Configure trusted-proxy and original scheme/host handling.
+     - **No direct ingress-nginx equivalent needed behind a passthrough GKE
+       L4 NLB** when agentgateway terminates TLS: derive scheme/client IP from
+       the connection and original host from ``Host``/``:authority``; treat
+       incoming ``X-Forwarded-*`` and ``Forwarded`` as untrusted. Optionally
+       overwrite/remove them with a ``PreRouting`` policy. Preserve peer IP
+       with Service ``externalTrafficPolicy: Local``. An upstream HTTP proxy
+       needs explicit trusted-source validation; agentgateway does not expose
+       ingress-nginx-style trusted-hop/CIDR configuration.
+     - NGINX RealIP trust and forwarding header overrides, if needed.
+   * - ``ssl-redirect: "true"``
+     - HTTPS redirect ``HTTPRoute.RequestRedirect``.
+     - Same.
+     - Same.
+   * - ``error-log-level: error``
+     - Envoy logging via ``GatewayParameters``.
+     - Proxy logging via ``AgentgatewayParameters``.
+     - ``NginxProxy.logging.errorLevel: error``.
+   * - ``allow-snippet-annotations: "true"``
+     - Not applicable: no snippets.
+     - Not applicable: no NGINX snippets.
+     - Enable ``nginxGateway.snippets.enable=true`` in Helm.
+   * - ``annotations-risk-level: Critical``
+     - Not applicable.
+     - Not applicable.
+     - No direct risk-level setting; restrict snippet editing with RBAC.
+   * - ``server-snippet``
+     - No arbitrary NGINX server block.
+     - No arbitrary NGINX server block.
+     - ``SnippetsPolicy`` with suitable server context.
+   * - ``proxy-buffering`` (default off)
+     - Envoy streaming model; no direct toggle.
+     - Streams without explicit response buffering.
+     - Use ``ProxySettingsPolicy.buffering.disable: true`` to preserve default.
+   * - ``proxy-request-buffering`` (default on)
+     - Different buffering architecture.
+     - Different buffering architecture.
+     - NGINX request buffering; check generated directive/default.
+
+External-auth snippets and custom error responses
+-------------------------------------------------
+
+.. list-table:: External-auth snippets and custom error responses
+   :header-rows: 1
+   :widths: 22 26 26 26
+
+   * - ingress-nginx feature / setting
+     - kgateway 2.4.7
+     - agentgateway 1.7.0
+     - NGF 2.8.0
+   * - ``auth_request_set $auth_error_body $upstream_http_x_error_body``
+     - No NGINX variable; can forward selected auth denial headers/body.
+     - Denied auth response can preserve body/headers; no identical variable assignment.
+     - **Snippet:** ``auth_request_set``.
+   * - ``auth_request_set`` for ``X-Error-Status``
+     - Forward relevant denial header; further transformation may be needed.
+     - Auth denial headers are returned with denial response.
+     - **Snippet:** ``auth_request_set``.
+   * - ``auth_request_set`` for ``Retry-After`` and ``WWW-Authenticate``
+     - ``authorizationResponse.headersToClient``.
+     - Denial HTTP response headers.
+     - ``WWW-Authenticate`` on 401; other headers through snippets.
+   * - ``auth_request_set`` for ``X-RateLimit-*``
+     - Forward via ``authorizationResponse`` to backend or client.
+     - Response metadata plus transformations; not a simple success-to-client mapping.
+     - **Snippet:** capture headers; ``add_header ... always`` or equivalent.
+   * - ``more_set_headers`` for rate-limit headers
+     - Response modifiers/auth-response header forwarding.
+     - CEL response transformation.
+     - ``add_header`` or njs; headers-more not included by default.
+   * - ``error_page 403 = @autherror``
+     - No named-location equivalent; customize denied response or auth service.
+     - No named-location equivalent; can preserve denial response from auth service.
+     - **Snippet:** NGINX ``error_page`` and named location.
+   * - ``server-snippet`` defining ``@autherror``
+     - No NGINX server context.
+     - No NGINX server context.
+     - **Snippet:** ``SnippetsPolicy`` server context; test generated location compatibility.
+   * - Remove only Gafaelfawr cookie before backend
+     - Custom Cookie rewriting; removing whole Cookie is not equivalent.
+     - CEL-based Cookie parse/rebuild; avoid dropping unrelated cookies.
+     - NGINX map/njs or custom snippet.
+   * - Remove Authorization before backend
+     - **Native:** request-header removal.
+     - **Native:** ``traffic.headerModifiers`` or CEL transformation.
+     - **Native:** ``RequestHeaderModifier``.
+   * - Remove empty Cookie request headers
+     - Conditional processing.
+     - CEL conditional transformation.
+     - NGINX map/snippet or equivalent.
+
+Implementation notes and clarifications
+-------------------------------------
+
+``proxy-redirect-from`` and ``proxy-redirect-to`` are not absent from either
+kgateway or agentgateway. Both can perform the upstream ``Location`` prefix
+rewrite (for example, ``/suit/login`` to ``/portal/app/login``) without
+changing the backend. Their behavior differs when ``Location`` is missing:
+
+* **kgateway 2.4.7:** a ``TrafficPolicy`` response template can compute the
+  replacement, but ``transformation.response.set`` unconditionally sets the
+  named header. Test whether a response lacking ``Location`` gets
+  ``Location:`` with an empty value. Unlike the NGINX directive, the response
+  transformation does not automatically rewrite ``Refresh`` headers.
+* **agentgateway 1.7.0:** a CEL response transformation can reference
+  ``response.headers["location"]`` and only replace values that begin with
+  ``/suit/``. If the header is absent, CEL evaluation fails and the
+  implementation removes ``Location`` rather than generating an empty value.
+  Other CEL evaluation failures remove the header too. Later response policies
+  can still modify the result.
+
+For the custom ``Server: OpenCADC/cadc-rest`` response header:
+
+* **kgateway 2.4.7:** setting ``Server`` on an HTTPRoute alone is not sufficient
+  with Envoy's default header behavior. Set the Gateway's
+  ``ListenerPolicy.default.httpSettings.serverHeaderTransformation`` to
+  ``PassThrough``, then apply an ``HTTPRoute`` ``ResponseHeaderModifier`` only
+  to CADC TAP routes. This changes how other routes handle upstream ``Server``
+  headers. If every route should have this name, use ListenerPolicy
+  ``serverHeaderTransformation: Overwrite`` with
+  ``serverName: OpenCADC/cadc-rest`` instead.
+
+Agentgateway's unbuffered HTTP request path has no general request-body size
+cap equivalent to ``client_max_body_size``. Therefore ``proxy-body-size: 0m``
+needs no body-limit policy on normal streamed traffic. By contrast, its
+body-buffering and body-inspection policies impose separate limits and memory
+requirements. This does **not** reproduce your global ``2g`` cap: streamed
+requests larger than 2 GiB are not automatically rejected.
+
+References
+----------
+
+* `kgateway 2.4.7 release <https://github.com/kgateway-dev/kgateway/releases/tag/v2.4.7>`_
+* `agentgateway 1.7.0 release <https://github.com/agentgateway/agentgateway/releases/tag/v1.7.0>`_
+* `NGF 2.8.0 release <https://github.com/nginx/nginx-gateway-fabric/releases/tag/v2.8.0>`_
+* `NGF session persistence <https://docs.nginx.com/nginx-gateway-fabric/traffic-management/session-persistence/>`_
+* `kgateway API reference <https://kgateway.dev/docs/envoy/latest/reference/api/>`_
+* `agentgateway API reference <https://agentgateway.dev/docs/kubernetes/latest/reference/api/>`_
+* `NGF API reference <https://docs.nginx.com/nginx-gateway-fabric/reference/api/>`_
+* `kgateway ListenerPolicy API <https://kgateway.dev/docs/envoy/latest/reference/api/>`_
+* `kgateway response-header control <https://kgateway.dev/docs/envoy/latest/traffic-management/header-control/response-header/>`_
+* `agentgateway response-transform implementation (v1.7.0) <https://github.com/agentgateway/agentgateway/blob/v1.7.0/crates/agentgateway/src/http/transformation_cel.rs>`_
+* `agentgateway header mutation implementation (v1.7.0) <https://github.com/agentgateway/agentgateway/blob/v1.7.0/crates/agentgateway/src/http/mod.rs>`_
+* `agentgateway response processing order (v1.7.0) <https://github.com/agentgateway/agentgateway/blob/v1.7.0/crates/agentgateway/src/proxy/httpproxy.rs>`_
+* `agentgateway response header modifier implementation (v1.7.0) <https://github.com/agentgateway/agentgateway/blob/v1.7.0/crates/agentgateway/src/http/filters.rs>`_
+* `agentgateway controller header modifier translation (v1.7.0) <https://github.com/agentgateway/agentgateway/blob/v1.7.0/controller/pkg/agentgateway/plugins/traffic_plugin.go>`_
