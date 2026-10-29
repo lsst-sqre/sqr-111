@@ -70,6 +70,20 @@ Other Phalanx applications rely on the following integration points with ingress
 Migration plan
 ==============
 
+We will want to have both the ``ingress-nginx`` proxy and our chosen Gateway controller proxy active in the cluster at the same time such that apps can accept traffic from either one.
+Since we use path-based routing for most of our apps, we can not control which proxy gets traffic for which app through DNS.
+We need some downstream HTTP-aware proxy to route requests to the correct proxy.
+
+There are a few ways we can do this:
+
+* Have a third proxy in the cluster that routes to either the ingress or gateway proxies
+* Have one of the ingress or gateway proxies route to the other
+* Have something completely outside the cluster that does the initial routing
+
+Any way we do this will add some overhead and complication to all requests into the cluster.
+Using something completely outside of the cluster lets us keep the cluster in as close to the final state as possible.
+The tradeoff is that switching traffic for an application has to happen outside of Phalanx config.
+
 The high-level migration steps are:
 
 #. Test promising candidates for a Gateway API implementation by installing them in a development cluster parallel to ingress-nginx using a separate external IP and testing them with hand-crafted ``Gateway`` resources.
@@ -80,25 +94,42 @@ The high-level migration steps are:
 
 #. Choose a Gateway API implemenation.
 
+#. Install the Gateway API conroller, have it create a Google Cloud NLB.
+
 #. Add support to Gafaelfawr's Kubernetes operator for generating ``Gateway`` resources and any associated resources, such as the custom middleware configuration required to send external authentication requests to the correct Gafaelfawr endpoint.
-   Initially, this should accept ``GafaelfawrIngress`` resources, if possible, and transform them into equivalent ``Gateway`` resources.
-   This will probably require adding a new field to ``GafaelfawrIngress`` to select the type of resource to generate so that we can enable this one-by-one.
-   If that proves too complex, we can go directly to a new ``GafaelfawrGateway`` resource and corresponding Gafaelfawr implementation.
+  This should use a new ``GafaelfawrGateway`` resource.
 
 #. Add any necessary additional support to Gafaelfawr required by the chosen Gateway API implementation.
    We may also have to further optimize a hot path for Gafaelfawr authorization requests if the chosen Gateway API doesn't support caching.
 
-#. Add Phalanx support for choosing between ingress-nginx and the new Gateway API, and write migration steps for how to convert an existing cluster.
+#. Benchmark hot routes before updating Google Cloud load balancing infrastructure.
 
-#. Migrate Phalanx environments to the new implementation, refining the migration steps with each conversion.
+#. In a dev environment, say ``idfdev``, provision a Google Cloud ALB to initially route traffic 100% to the existing ``ingress-nginx``-provisioned NLB.
 
-#. Add Gafaelfawr support for a new ``GafaelfawrGateway`` resource, if that was not required earlier.
+#. Switch ``data-dev.lsst.cloud`` to point to this new ALB.
 
-#. Convert all ``GafaelfawrIngress`` resources in Phalanx to ``GafaelfawrGateway``.
-   Also convert as many third-party chart ingresses to gateways as possible, based on whether upstream supports gateways.
+#. Run benchmarks again, make sure we didn't lose too much performance.
+
+#. Pick an application in the cluster, provision a ``GafaelfawrGateway`` resource.
+
+#. Update the config of the ALB to route that application's path to the new Gateway NLB.
+
+#. Migrate the rest of the Phalanx applications to the new implementation, refining the migration steps with each conversion.
+
+#. Convert manually provisioned ``Ingress`` resources to ``HTTPRoute`` resources and update ALB configuration.
+
+#. Manually provision ``HTTPRoute`` resources for any 3rd-party charts that only support ``Ingress`` resources.
+
+#. Point ``data-dev.lsst.cloud`` at the new Gateway NLB
+
+#. Destroy the ALB
+
+#. Remove the ``ingress-nginx`` app from the cluster
 
 USDF will require special attention because they currently deploy a separate ingress-nginx service outside of the vCluster_ clusters that are visible to Phalanx environment administrators.
 As part of this migration, this practice should stop for Phalanx-managed clusters and the gateway API implementation should be managed by Phalanx as it is in any other Phalanx environment.
+
+We'll also need something like the Google Cloud ALB to do path-based routing to the correct proxy.
 
 .. _vCluster: https://www.vcluster.com/docs
 
